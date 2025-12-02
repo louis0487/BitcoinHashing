@@ -1,14 +1,81 @@
 module bitcoin_hash (input logic        clk, reset_n, start,
                      input logic [15:0] message_addr, output_addr,
-                    output logic        done, mem_clk, mem_we,
-                    output logic [15:0] mem_addr,
-                    output logic [31:0] mem_write_data,
+                     output logic        done, mem_clk, mem_we,
+                     output logic [15:0] mem_addr,
+                     output logic [31:0] mem_write_data,
                      input logic [31:0] mem_read_data);
 
-parameter num_nonces = 16;
+parameter num_nonces = 16; // The number that we need to test the proper nonce for bitcoin hash regulation.
+parameter num_words = 19; // Bitcoin data is constructed by 20 words containing the nonce, but for the last word, we need to test it by ourselve. So we only need to load 19 words from memory.
 
-logic [ 4:0] state;
+enum logic [ 4:0] {IDLE, READ, BLOCK, COMPUTE, WRITE} state;
 logic [31:0] hout[num_nonces];
+logic [31:0] w[64];
+logic [31:0] message[num_words];
+logic [31:0] wt;
+logic [31:0] h0, h1, h2, h3, h4, h5, h6, h7;
+logic [31:0] a, b, c, d, e, f, g, h;
+logic [ 7:0] i, j, tstep, nonce; // for counting purpose.
+logic [15:0] offset; // in word address
+logic [31:0] num_blocks;
+logic        cur_we;
+logic [15:0] cur_addr;
+logic [31:0] cur_write_data;
+logic [63:0] bitsize;
+
+assign num_blocks = determine_num_blocks(num_words); //Assign a register for number of blocks
+assign bitsize = num_words * 32; //Assign a register for the last 64 bits of the last block.
+
+// Generate request to memory
+// for reading from memory to get original message
+// for writing final computed has value
+assign mem_clk = clk;
+assign mem_addr = cur_addr + offset;
+assign mem_we = cur_we;
+assign mem_write_data = cur_write_data;
+
+// Function to determine number of blocks in memory to fetch
+function logic [15:0] determine_num_blocks(input integer size);
+
+  logic [63:0] total_length; // Maximum input bits length for Bitcoin_hash.
+  total_length = (size * 32) + 1 + 64; // The total length would be num of words*its size + one padding 1 + 64 size.
+  determine_num_blocks = ((total_length + 511)/512); // Doing a ceiling, and other missing bits between padding 1 and size would be 0.
+
+  endfunction
+// SHA256 hash round.
+function logic [255:0] sha256_op(input logic [31:0] a, b, c, d, e, f, g, h, w,
+                                 input logic [ 7:0] t);
+    logic [31:0] S1, S0, ch, maj, t1, t2; // internal signals
+begin
+    S1 = rightrotate(e, 6) ^ rightrotate(e, 11) ^ rightrotate(e, 25);
+    ch = (e & f) ^ ((~e) & g);
+    t1 = h + S1 + ch + k[t] + w;
+    S0 = rightrotate(a, 2) ^ rightrotate(a, 13) ^ rightrotate(a, 22);
+    maj = (a & b) ^(a & c) ^ (b & c);
+    t2 = S0 + maj;
+    sha256_op = {t1 + t2, a, b, c, d + t1, e, f, g};
+end
+endfunction
+//Word expansion before doing SHA256 hash round.
+function logic [31:0] word_expan(input logic [ 7:0] t);
+	 logic [31:0] s0,s1;
+begin
+	 s0 = (rightrotate(w[t-15], 7)) ^ (rightrotate(w[t-15], 18)) ^ (rightshift(w[t-15], 3));
+	 s1 = (rightrotate(w[t-2], 17)) ^ (rightrotate(w[t-2], 19)) ^ (rightshift(w[t-2], 10));
+	 word_expan = w[t-16] + s0 + w[t-7] + s1;
+end
+endfunction
+
+// Right rotation function
+function logic [31:0] rightrotate(input logic [31:0] x,
+                                  input logic [ 7:0] r);
+   rightrotate = (x >> r) | (x << (32 - r));
+endfunction
+//Right shift function for word expansion.
+function logic [31:0] rightshift(input logic [31:0] x,
+											input logic [ 7:0] r);
+	rightshift = (x >> r);
+endfunction
 
 parameter int k[64] = '{
     32'h428a2f98,32'h71374491,32'hb5c0fbcf,32'he9b5dba5,32'h3956c25b,32'h59f111f1,32'h923f82a4,32'hab1c5ed5,
@@ -21,8 +88,175 @@ parameter int k[64] = '{
     32'h748f82ee,32'h78a5636f,32'h84c87814,32'h8cc70208,32'h90befffa,32'ha4506ceb,32'hbef9a3f7,32'hc67178f2
 };
 
-// Student to add rest of the code here
 
+// Bitcoin hash FSM 
+// Get a BLOCK from the memory, COMPUTE Hash output using SHA256 function
+// and write back hash value back to memory
+always_ff @(posedge clk, negedge reset_n)
+begin
+  if (!reset_n) begin
+    cur_we <= 1'b0;
+	 offset <= 0;
+    state <= IDLE;
+	 h0 <= 32'h6a09e667;
+	 h1 <= 32'hbb67ae85;
+	 h2 <= 32'h3c6ef372;
+	 h3 <= 32'ha54ff53a;
+	 h4 <= 32'h510e527f;
+	 h5 <= 32'h9b05688c;
+	 h6 <= 32'h1f83d9ab;
+	 h7 <= 32'h5be0cd19;
+  end 
+  else case (state)
+	 
+	 IDLE: begin  // Initialize hash values h0 to h7 and a to h, other variables and memory we, address offset, etc
+	 
+       if(start) begin 
+			i <= 0;
+			j <= 0;
+			tstep <= 0;
+			a <= h0;
+			b <= h1;
+			c <= h2;
+			d <= h3;
+			e <= h4;
+			f <= h5;
+			g <= h6;
+			h <= h7;
+			cur_we <= 0;
+			offset <= 0;  //We need address and offset one cycle beyond the read process to let it load the message.
+			cur_addr <= message_addr; //We need address and offset one cycle beyond the read process to let it load the message.
+			for(int z = 0; z < 64; z++) begin
+				w[z] <= 32'b0;
+			end
+			state <= READ;
+		  
+		  end
+    end
+
+    
+	 READ: begin // Read the input message from memory.
+		offset <= offset+1;
+		cur_addr <= message_addr;
+		if(i <= num_words) begin
+			i <= i + 1;
+			if (i != 0) begin
+				message[i-1] <= mem_read_data; //Message need one more cycle for loading. For example, at offset = 1, the offset = 0 will be loaded.
+			end
+		end
+		else begin
+		i <= 0;
+		state <= BLOCK;
+		end
+	 end
+    BLOCK: begin
+	// Fetch message in 512-bit block size
+	// For each of 512-bit block initiate hash value computation
+	 if (j == num_blocks) begin // Detecting whether the process is finished. If so, then go to write process.
+			hi[0] <= h0; 
+			hi[1] <= h1; 
+			hi[2] <= h2; 
+			hi[3] <= h3;
+			hi[4] <= h4; 
+			hi[5] <= h5; 
+			hi[6] <= h6; 
+			hi[7] <= h7;
+			i <= 0;           
+			cur_we <= 1'b1;
+			state <= WRITE;
+		 end
+    else begin
+        for (int k = 0; k < 16; k++) begin // 16 message a run.
+            int cur_i;
+            cur_i = 16 * j + k; //Global counter for counting which position should start.
+				
+            if ((j == num_blocks - 1) && (k >= 14)) begin // Detect for the last two message of the message size.
+                if (k == 14) w[k] <= bitsize[63:32];
+                if (k == 15) w[k] <= bitsize[31:0];
+            end
+            
+            else if (cur_i < num_words) begin // Detect for the messaages that are not loaded. 
+                w[k] <= message[cur_i];
+            end
+            
+            else if (cur_i == num_words) begin 
+                w[k] <= nonce;
+					 nonce <= nonce + 1; // Testing different nonce from 0 to 15.
+            end
+            else if (cur_i == num_words + 1) begin// Detect for the 1 padding after the input message.
+					 w[k] <= 32'h80000000;
+				end
+            else begin // Else are 32-bit 0 padding.
+                w[k] <= 32'b0;
+            end
+        end 
+
+        tstep <= 0; 
+        a <= h0; 
+		  b <= h1; 
+		  c <= h2; 
+		  d <= h3;
+        e <= h4; 
+		  f <= h5; 
+		  g <= h6; 
+		  h <= h7; // Before every operation, the a to h value should update to the previos hash value.
+        state <= COMPUTE;
+    end
+	end
+
+    // For each block compute hash function
+    // Go back to BLOCK stage after each block hash computation is completed and if
+    // there are still number of message blocks available in memory otherwise
+    // move to WRITE stage
+    COMPUTE: begin
+	// 64 processing rounds steps for 512-bit block 
+		logic [31:0] current_wt;
+		  if(tstep < 64) begin
+			if (tstep < 16) begin
+				current_wt = w[tstep]; // Set up a blocking statement for immediately updating message.
+			end
+			else begin
+				current_wt = word_expan(tstep);
+				w[tstep] <= current_wt;
+		   end
+			{a,b,c,d,e,f,g,h} <= sha256_op(a,b,c,d,e,f,g,h, current_wt, tstep);
+			tstep <= tstep + 1;
+		  end
+		  else begin
+			h0 <= h0 + a;
+			h1 <= h1 + b;
+			h2 <= h2 + c;
+			h3 <= h3 + d;
+			h4 <= h4 + e;
+			h5 <= h5 + f;
+			h6 <= h6 + g;
+			h7 <= h7 + h;
+			j  <= j + 1;
+			tstep <= 0;
+			state <= BLOCK;
+        end
+    end
+
+    // h0 to h7 each are 32 bit hashes, which makes up total 256 bit value
+    // h0 to h7 after compute stage has final computed hash value
+    // write back these h0 to h7 to memory starting from output_addr
+    WRITE: begin
+		  if(i < 8) begin
+			offset <= i;
+			cur_addr <= output_addr;
+			cur_write_data <= hi[i];
+			i <= i + 1;
+		  end
+		  else begin
+			cur_we <= 1'b0;
+			state <= IDLE;
+		  end
+    end
+   endcase
+  end
+
+// Generate done when SHA256 hash computation has finished and moved to IDLE state
+assign done = (state == IDLE);
 
 
 
