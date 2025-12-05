@@ -1,21 +1,24 @@
 module simplified_sha256 #(parameter integer NUM_OF_WORDS = 20)(
- input logic  clk, reset_n,
- input logic  [31:0] w[64],
- input logic  [31:0] hi0, hi1, hi2, hi3, hi4, hi5, hi6, hi7;
- output logic [31:0] ho[8]
+ input logic  clk, start,
+ input logic  phase_sel,
+ input logic  [3 :0] nonce,
+ input logic  [31:0] hi[8],
+ input logic  [31:0] msg_tail [3],
+ output logic [31:0] ho[8],
+ output logic finish
  );
 
 // FSM state variables 
-enum logic [2:0] { COMPUTE, OUTPUT} state;
+enum logic [2:0] { PHASE2, PHASE3, OUTPUT} state;
 
 // NOTE : Below mentioned frame work is for reference purpose.
 // Local variables might not be complete and you might have to add more variables
 // or modify these variables. Code below is more as a reference.
 
 // Local variables
-logic [31:0] wt;
-logic [31:0] h0, h1, h2, h3, h4, h5, h6, h7; // For hash values generated during the SHA operation
+logic [31:0] w[64];
 logic [31:0] a, b, c, d, e, f, g, h;
+logic [31:0] h0, h1, h2, h3, h4, h5, h6, h7;
 logic [ 7:0] tstep;
 
 // SHA256 K constants
@@ -81,64 +84,128 @@ endfunction
 // Get a BLOCK from the memory, COMPUTE Hash output using SHA256 function
 // and write back hash value back to memory
 
-always_ff @(posedge clk, negedge reset_n)
+always_ff @(posedge clk)
 begin
-	if(!reset_n)	begin
-		tstep <= 0;
-		a <= hi0;
-		b <= hi1;
-		c <= hi2;
-		d <= hi3;
-		e <= hi4;
-		f <= hi5;
-		g <= hi6;
-		h <= hi7;
-		state <= compute;
+	if (start) begin
+      tstep <= 0;
+		a <= hi[0];
+		b <= hi[1];
+		c <= hi[2];
+		d <= hi[3];
+		e <= hi[4];
+		f <= hi[5];
+		g <= hi[6];
+		h <= hi[7];
+		finish <= 0;
+		if(phase_sel == 0) begin
+		state <= PHASE2;
+		end
+		else begin
+		state <= PHASE3;
+		end
 	end
 	else begin
 		case (state)
-		COMPUTE: begin
+		PHASE2: begin
 	// 64 processing rounds steps for 512-bit block 
 			logic [31:0] current_wt;
-		  if(tstep < 64) begin
-			if (tstep < 16) begin
-				current_wt = w[tstep]; // Set up a blocking statement for immediately updating message.
+			if(tstep < 64) begin
+				if (tstep < 3) begin
+					current_wt = msg_tail[tstep]; // Set up a blocking statement for immediately updating message.
+					w[tstep] <= msg_tail[tstep];
+				end
+				else if(tstep == 3) begin
+					current_wt = nonce;
+					w[tstep] <= nonce;
+					
+				end
+				else if(tstep == 4) begin
+					current_wt = 32'h80000000;
+					w[tstep] <= 32'h80000000;
+				end
+				else if(tstep < 15) begin
+					current_wt = 32'h00000000;
+					w[tstep] <= 32'h00000000;
+				end
+				else if(tstep == 15) begin
+					current_wt = 32'd640;
+					w[tstep] <= 32'd640;
+				end
+				else begin
+					current_wt = word_expan(tstep);
+					w[tstep] <= current_wt;
+				end
+				{a,b,c,d,e,f,g,h} <= sha256_op(a,b,c,d,e,f,g,h, current_wt, tstep);
+				tstep <= tstep + 1;
 			end
 			else begin
-				current_wt = word_expan(tstep);
-				w[tstep] <= current_wt;
-		   end
-			{a,b,c,d,e,f,g,h} <= sha256_op(a,b,c,d,e,f,g,h, current_wt, tstep);
-			tstep <= tstep + 1;
-		  end
-		  else begin
-				h0 <= h0 + a;
-				h1 <= h1 + b;
-				h2 <= h2 + c;
-				h3 <= h3 + d;
-				h4 <= h4 + e;
-				h5 <= h5 + f;
-				h6 <= h6 + g;
-				h7 <= h7 + h;
+				h0 <= hi[0] + a;
+				h1 <= hi[1] + b;
+				h2 <= hi[2] + c;
+				h3 <= hi[3] + d;
+				h4 <= hi[4] + e;
+				h5 <= hi[5] + f;
+				h6 <= hi[6] + g;
+				h7 <= hi[7] + h;
 				tstep <= 0;
 				state <= OUTPUT;
-        end
+			end
 		end
-
-    // h0 to h7 each are 32 bit hashes, which makes up total 256 bit value
-    // h0 to h7 after compute stage has final computed hash value
-    // write back these h0 to h7 to memory starting from output_addr
+		PHASE3: begin
+	// 64 processing rounds steps for 512-bit block 
+			logic [31:0] current_wt;
+			if(tstep < 64) begin
+				if (tstep < 8) begin
+					current_wt = hi[tstep]; // Set up a blocking statement for immediately updating message.
+					w[tstep] <= hi[tstep];
+				end
+				else if (tstep == 8) begin
+					current_wt = 32'h80000000;
+					w[tstep] <= 32'h80000000;
+				end
+				else if (tstep < 15) begin
+					current_wt = 32'h00000000;
+					w[tstep] <= 32'h00000000;
+				end
+				else if (tstep == 15) begin
+					current_wt = 32'd256;
+					w[tstep] <= 32'd256;
+				end
+				else begin
+					current_wt = word_expan(tstep);
+					w[tstep] <= current_wt;
+				end
+				{a,b,c,d,e,f,g,h} <= sha256_op(a,b,c,d,e,f,g,h, current_wt, tstep);
+				tstep <= tstep + 1;
+			end
+			else begin
+				h0 <= hi[0] + a;
+				h1 <= hi[1] + b;
+				h2 <= hi[2] + c;
+				h3 <= hi[3] + d;
+				h4 <= hi[4] + e;
+				h5 <= hi[5] + f;
+				h6 <= hi[6] + g;
+				h7 <= hi[7] + h;
+				tstep <= 0;
+				state <= OUTPUT;
+			end
+		end
 		OUTPUT: begin
-		  ho[0] <= h0;
-		  ho[1] <= h1;
-		  ho[2] <= h2;
-		  ho[3] <= h3;
-		  ho[4] <= h4;
-		  ho[5] <= h5;
-		  ho[6] <= h6;
-		  ho[7] <= h7;	
-		  end
+			ho[0] <= h0;
+			ho[1] <= h1;
+			ho[2] <= h2;
+			ho[3] <= h3;
+			ho[4] <= h4;
+			ho[5] <= h5;
+			ho[6] <= h6;
+			ho[7] <= h7;
+			finish <= 1;
+		end
+		default: begin
+			finish <= 0;
+		end
    endcase
   end
-
+end
 endmodule
