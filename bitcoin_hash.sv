@@ -5,10 +5,42 @@ module bitcoin_hash (input logic        clk, reset_n, start,
                      output logic [31:0] mem_write_data,
                      input logic [31:0] mem_read_data);
 
-parameter num_nonces = 16; // The number that we need to test the proper nonce for bitcoin hash regulation.
-parameter num_words = 19; // Bitcoin data is constructed by 20 words containing the nonce, but for the last word, we need to test it by ourselve. So we only need to load 19 words from memory.
 
-enum logic [ 4:0] {IDLE, READ, BLOCK, COMPUTE, WRITE} state;
+parameter num_nonces = 16; // The number that we need to test the proper nonce for bitcoin hash regulation.
+//parameter num_words = 19; // Bitcoin data is constructed by 20 words containing the nonce, but for the last word, we need to test it by ourselve. So we only need to load 19 words from memory.
+
+// State definition
+enum logic [4:0] {IDLE, READ, PHASE1, PHASE2, PHASE3, WRITE} state;
+
+// Memory and Data buffers
+logic [31:0] message_buffer [0:18];  // Stores the loaded 19 words (Words 0~18)
+logic [31:0] h_phase1 [0:7];  // Stores the result of Phase 1 computed by Master
+logic [31:0] intermediate_hashes [15:0][7:0];  // Stores Phase 2 results (H0-H7) for all 16 workers
+logic [31:0] final_hashes [15:0];  // Stores the final H0 result for all 16 workers
+
+// Control signals and Counters
+logic [15:0] offset;  // Memory address offset
+logic [4:0] i;  // General purpose index counter
+logic [6:0] master_step;  // Counter for Master's internal SHA-256 operation (Phase 1)
+
+// Workers control signals (from Master to Workers)
+logic worker_start;  // The start pulse for workers
+logic worker_phase_sel; // 0 for Phase 2, 1 for Phase 3
+
+// Worker inner data interface (Arrays for connecting 16 instances)
+logic [31:0] worker_hin [15:0][7:0];  // Input Hash (hi) for 16 workers
+logic [31:0] worker_hout [15:0][7:0];  // Output Hash (ho) for 16 workers
+logic worker_finish [15:0];  // Finish signal from 16 workers
+logic [31:0] msg_tail [0:2];  // Block 2 message tail (Words 16, 17, 18).  寫[0:2] 而不是 [2:0] 因為要對應順著數 i.e. word16=index0, word17=index1, word18=index2
+
+// Master internal calculation variable for PHASE1
+logic [31:0] a, b, c, d, e, f, g, h_reg;  //雖然 a, b, c, d, e, f, g 都直接用了單一字母，但唯獨 h 改成 h_reg，是因為 h 在 Verilog 語言中太過特殊（Hex 前綴）且容易與陣列名稱打架。這是一種防禦性的 Coding Style（編碼風格), 且也比較好debug 
+logic [31:0] w_phase1 [0:15];  // 這啥???  Sliding window for Master's W expansion
+
+
+_______寫到這___
+
+
 logic [31:0] hout[num_nonces];
 logic [31:0] w[64];
 logic [31:0] message[num_words];
@@ -151,6 +183,59 @@ always_ff @(posedge clk, negedge reset_n)
 		    state <= BLOCK;
 		end
 	end
+    
+
+    PHASE1: begin
+
+
+    worker_start <= 1;  // Send Start Pulse, so when go to PHASE2, all workers can start computing immediately.    
+    end
+
+
+    PHASE2: begin
+        // Workers are running Phase 2. Wait for completion.
+        // check worker_finish signals. (checking only worker[0] is sufficient since all start/finish synchronously同步發生)
+        if (worker_finish[0] == 1) begin
+            // Collect intermediate hashes from all workers
+            for (int k=0, k<16, k=k+1) begin
+                intermediate_hashes[k] <= worker_hout[k];  //在程式碼中寫下 intermediate_hashes[k] 時你指定了第一維->選定第 k 層抽屜。你沒指定第二維->這代表你指的是 「這整層抽屜裡面的所有東西」。
+            end
+            
+            state <= PHASE3;
+            worker_start <= 1;  // Send Start Pulse for Phase 3
+            worker_phase_sel <= 1; // Set Phase Select to 1 for Phase 3
+        end
+    end
+
+
+    PHASE3: begin
+        if (worker_finish[0] == 1) begin
+            // Collect intermediate hashes from all workers
+            for (int k=0, k<16, k=k+1) begin
+                final_hashes[k] <= worker_hout[k][0]; // Collect only H0 from each worker  
+            end
+
+            state<=WRITE;
+            offset <= 0;  為啥???
+            i <= 0;
+        end
+    end
+
+
+    WRITE: begin
+
+    end
+    
+    
+    
+    
+
+
+
+
+
+
+    
     
     BLOCK: begin
 	// Fetch message in 512-bit block size
