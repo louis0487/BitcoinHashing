@@ -13,7 +13,7 @@ parameter num_nonces = 16; // The number that we need to test the proper nonce f
 enum logic [4:0] {IDLE, READ, PHASE1, PHASE2, PHASE3, WRITE} state;
 
 // Memory and Data buffers
-logic [31:0] message_buffer [0:18];  // Stores the loaded 19 words (Words 0~18)
+logic [31:0] message_buffer [0:18]; 為什麼需要這個? 後面message array就在做儲存了// Stores the loaded 19 words (Words 0~18) 
 logic [31:0] h_phase1 [0:7];  // Stores the result of Phase 1 computed by Master
 logic [31:0] intermediate_hashes [15:0][7:0];  // Stores Phase 2 results (H0-H7) for all 16 workers
 logic [31:0] final_hashes [15:0];  // Stores the final H0 result for all 16 workers
@@ -21,7 +21,6 @@ logic [31:0] final_hashes [15:0];  // Stores the final H0 result for all 16 work
 // Control signals and Counters
 logic [15:0] offset;  // Memory address offset
 logic [4:0] i;  // General purpose index counter
-logic [6:0] master_step;  // Counter for Master's internal SHA-256 operation (Phase 1)
 
 // Workers control signals (from Master to Workers)
 logic worker_start;  // The start pulse for workers
@@ -35,7 +34,7 @@ logic [31:0] msg_tail [0:2];  // Block 2 message tail (Words 16, 17, 18).  寫[0
 
 // Master internal calculation variable for PHASE1
 logic [31:0] a, b, c, d, e, f, g, h_reg;  //雖然 a, b, c, d, e, f, g 都直接用了單一字母，但唯獨 h 改成 h_reg，是因為 h 在 Verilog 語言中太過特殊（Hex 前綴）且容易與陣列名稱打架。這是一種防禦性的 Coding Style（編碼風格), 且也比較好debug 
-logic [31:0] w_phase1 [0:15];  // 這啥???  Sliding window for Master's W expansion
+logic [31:0] w_phase1 [0:15];  我不知道，可以刪掉// 這啥???   Sliding window for Master's W expansion
 
 
 _______寫到這___
@@ -46,9 +45,7 @@ logic [31:0] w[64];
 logic [31:0] message[num_words];
 logic [31:0] wt;
 logic [31:0] h0, h1, h2, h3, h4, h5, h6, h7;
-logic [31:0] a, b, c, d, e, f, g, h;
-logic [ 7:0] i, j, tstep, nonce; // for counting purpose.
-logic [15:0] offset; // in word address
+logic [ 7:0] i, tstep; // for counting purpose.
 logic [31:0] num_blocks;
 logic        cur_we;
 logic [15:0] cur_addr;
@@ -148,7 +145,6 @@ always_ff @(posedge clk, negedge reset_n)
 	IDLE: begin  // Initialize hash values h0 to h7 and a to h, other variables and memory we, address offset, etc
         if(start) begin 
 			i <= 0;
-			j <= 0;
 			tstep <= 0;
 			a <= h0;
 			b <= h1;
@@ -157,7 +153,7 @@ always_ff @(posedge clk, negedge reset_n)
 			e <= h4;
 			f <= h5;
 			g <= h6;
-			h <= h7;
+			h_reg <= h7;
 			cur_we <= 0;
 			offset <= 0;  //We need address and offset one cycle beyond the read process to let it load the message.
 			cur_addr <= message_addr; //We need address and offset one cycle beyond the read process to let it load the message.
@@ -179,6 +175,9 @@ always_ff @(posedge clk, negedge reset_n)
 			end
 		end
 		else begin
+			 msg_tail[0] <= message[16];
+			 msg_tail[1] <= message[17];
+			 msg_tail[2] <= message[18];
 		    i <= 0;
 		    state <= BLOCK;
 		end
@@ -186,9 +185,33 @@ always_ff @(posedge clk, negedge reset_n)
     
 
     PHASE1: begin
-
-
-    worker_start <= 1;  // Send Start Pulse, so when go to PHASE2, all workers can start computing immediately.    
+	 logic [31:0] current_wt;
+		    if(tstep < 64) begin
+			    if (tstep < 16) begin
+				    current_wt = w[tstep]; // Set up a blocking statement for immediately updating message.
+			    end
+			 else begin
+				current_wt = word_expan(tstep);
+				w[tstep] <= current_wt;
+		    end
+			
+            {a,b,c,d,e,f,g,h} <= sha256_op(a,b,c,d,e,f,g,h, current_wt, tstep);
+				tstep <= tstep + 1;
+		    end
+		    
+            else begin
+                intermediate_hashes[15:0][0] <= h0 + a;
+                intermediate_hashes[15:0][1] <= h1 + b;
+                intermediate_hashes[15:0][2] <= h2 + c;
+                intermediate_hashes[15:0][3] <= h3 + d;
+                intermediate_hashes[15:0][4] <= h4 + e;
+                intermediate_hashes[15:0][5] <= h5 + f;
+                intermediate_hashes[15:0][6] <= h6 + g;
+                intermediate_hashes[15:0][7] <= h7 + h;
+                tstep <= 0;
+                state <= PHASE2;
+					 worker_start <= 1;  // Send Start Pulse, so when go to PHASE2, all workers can start computing immediately.
+            end    
     end
 
 
@@ -200,11 +223,12 @@ always_ff @(posedge clk, negedge reset_n)
             for (int k=0, k<16, k=k+1) begin
                 intermediate_hashes[k] <= worker_hout[k];  //在程式碼中寫下 intermediate_hashes[k] 時你指定了第一維->選定第 k 層抽屜。你沒指定第二維->這代表你指的是 「這整層抽屜裡面的所有東西」。
             end
-            
+				
             state <= PHASE3;
             worker_start <= 1;  // Send Start Pulse for Phase 3
             worker_phase_sel <= 1; // Set Phase Select to 1 for Phase 3
         end
+		  else worker_start <= 0; //這個是用來防止submodule卡在idel state.
     end
 
 
@@ -216,9 +240,9 @@ always_ff @(posedge clk, negedge reset_n)
             end
 
             state<=WRITE;
-            offset <= 0;  為啥???
             i <= 0;
         end
+		  else worker_start <= 0; //這個是用來防止submodule卡在idel state.
     end
 
 
@@ -226,76 +250,6 @@ always_ff @(posedge clk, negedge reset_n)
 
     end
     
-    
-    
-    
-
-
-
-
-
-
-    
-    
-    BLOCK: begin
-	// Fetch message in 512-bit block size
-	// For each of 512-bit block initiate hash value computation
-	if (j == num_blocks) begin // Detecting whether the process is finished. If so, then go to write process.
-		hi[0] <= h0; 
-		hi[1] <= h1; 
-		hi[2] <= h2; 
-		hi[3] <= h3;
-		hi[4] <= h4; 
-		hi[5] <= h5; 
-		hi[6] <= h6; 
-		hi[7] <= h7;
-		i <= 0;           
-		cur_we <= 1'b1;
-		state <= WRITE;
-	end
-    else begin
-        for (int k = 0; k < 16; k++) begin // 16 message a run.
-            int cur_i;
-            cur_i = 16 * j + k; //Global counter for counting which position should start.
-				
-            if ((j == num_blocks - 1) && (k >= 14)) begin // Detect for the last two message of the message size.
-                if (k == 14) w[k] <= bitsize[63:32];
-                if (k == 15) w[k] <= bitsize[31:0];
-            end
-            
-            else if (cur_i < num_words) begin // Detect for the messaages that are not loaded. 
-                w[k] <= message[cur_i];
-            end
-            
-            else if (cur_i == num_words) begin 
-                w[k] <= nonce;
-					 nonce <= nonce + 1; // Testing different nonce from 0 to 15.
-            end
-            else if (cur_i == num_words + 1) begin// Detect for the 1 padding after the input message.
-					 w[k] <= 32'h80000000;
-				end
-            else begin // Else are 32-bit 0 padding.
-                w[k] <= 32'b0;
-            end
-        end 
-
-        tstep <= 0; 
-        a <= h0; 
-		b <= h1; 
-		c <= h2; 
-		d <= h3;
-        e <= h4; 
-		f <= h5; 
-		g <= h6; 
-		h <= h7; // Before every operation, the a to h value should update to the previos hash value.
-        state <= COMPUTE;
-    end
-	end
-
-    // For each block compute hash function
-    // Go back to BLOCK stage after each block hash computation is completed and if
-    // there are still number of message blocks available in memory otherwise
-    // move to WRITE stage
     COMPUTE: begin
 	// 64 processing rounds steps for 512-bit block 
 		logic [31:0] current_wt;
@@ -321,7 +275,6 @@ always_ff @(posedge clk, negedge reset_n)
                 h5 <= h5 + f;
                 h6 <= h6 + g;
                 h7 <= h7 + h;
-                j  <= j + 1;
                 tstep <= 0;
                 state <= BLOCK;
             end
@@ -344,7 +297,22 @@ always_ff @(posedge clk, negedge reset_n)
     end
     endcase
     end
-
+// Instantiate a submodule for operating phase 2 and phase 3.
+genvar nonce;
+generate 
+	for(nonce = 0; nonce < 16; nonce++) begin
+		simpified_sha256 sha256_block(
+			.clk(clk),
+			.start(worker_start),
+			.phase_sel(worker_phase_sel),
+			.nonce(nonce),
+			.hi[8](intermediate_hashes[nonce]),
+			.msg_tail[0:2](msg_tail[0:2]),
+			.ho[8](worker_hout[nonce]),
+			.finish(worker_finish[nonce])
+			);
+	end
+endgenerate
 // Generate done when SHA256 hash computation has finished and moved to IDLE state
 assign done = (state == IDLE);
 

@@ -3,7 +3,7 @@ module simplified_sha256 #(parameter integer NUM_OF_WORDS = 20)(
  input logic  phase_sel,
  input logic  [3 :0] nonce,
  input logic  [31:0] hi[8],
- input logic  [31:0] msg_tail [3],
+ input logic  [31:0] msg_tail [0:2],
  output logic [31:0] ho[8],
  output logic finish
  );
