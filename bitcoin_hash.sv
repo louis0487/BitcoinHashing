@@ -105,8 +105,9 @@ assign mem_addr = (state == READ) ? (message_addr + offset) : (output_addr + off
 assign mem_we = (state == WRITE) ? 1'b1 : 1'b0;
  
 //Prepare common message tail (Words 16, 17, 18) for Block 2
-assign msg_tail = '{message_buffer[16], message_buffer[17], message_buffer[18]};  //assign is like a forever wire connection. Here we connect message_tail to message_buffer[16~18]
-
+assign msg_tail[0] = message_buffer[16];  //assign is like a forever wire connection. Here we connect message_tail to message_buffer[16~18]
+assign msg_tail[1] = message_buffer[17];
+assign msg_tail[2] = message_buffer[18];
 
 // Instantiate 16 Worker modules for Phase 2 and Phase 3
 genvar n;
@@ -129,7 +130,7 @@ generate
             .phase_sel(worker_phase_sel),
             .nonce(n[3:0]),  //only need the 4 LSB bits of n(0 to 15). n=0(nonce=0)->nonce=0 input to worker1 ; n=1(nonce=1)->nonce=1 input to worker2
             .hi(worker_hin[n]),  // When n=0, worker_hin[0] goes to the first worker ; n=1, worker_hin[1] goes to second worker
-            .msg_tail(msg_tail),
+            .msg_tail(msg_tail[0:2]),
             .ho(worker_hout[n]),
             .finish(worker_finish[n])
         );       
@@ -216,12 +217,14 @@ always_ff @(posedge clk, negedge reset_n)begin
                 end
 
                 // 2.Compression logic
-                if (master_tstep <64)begin
+                if (master_tstep < 64)begin
                     //A. SHA256 operation
                    {a,b,c,d,e,f,g,h_reg} <= sha256_op(a,b,c,d,e,f,g,h_reg,current_w,k[master_tstep] ); //directly input "k[master_tstep]"(the value of k at index master_tstep) into the function
                     //B. Update sliding window for W
                     if (master_tstep >= 16) begin  //only start to shift when master_tstep>15
-                        for (int x=0; x<15; x++) w_phase1[x] <= w_phase1[x+1]; // shift every bit left
+                        for (int x=0; x<15; x++) begin
+									w_phase1[x] <= w_phase1[x+1]; // shift every bit left
+								end
                         w_phase1[15] <= current_w;  //load the new current_w into the last position
                     end
                     
@@ -258,6 +261,7 @@ always_ff @(posedge clk, negedge reset_n)begin
                     worker_start <= 1;     // Start workers again
                     state <= PHASE3;
                 end
+					 else worker_start <= 0;
             end
 
 
@@ -272,6 +276,7 @@ always_ff @(posedge clk, negedge reset_n)begin
                     offset <= 0;  // Reset offset for WRITE stage. bc we already used offset in READ stage (offset=19), if not reset, the offset value will start from 19 in WRITE stage.
                     i <= 0;     // Reset i for WRITE stage (also used in READ stage)
                 end
+					 else worker_start <= 0;
             end
 
 
@@ -290,4 +295,5 @@ always_ff @(posedge clk, negedge reset_n)begin
         endcase
     end
 end
+
 endmodule
