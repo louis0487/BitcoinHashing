@@ -6,7 +6,7 @@ module bitcoin_hash (input logic        clk, reset_n, start,
                      input logic [31:0] mem_read_data);
 
 
-parameter num_nonces = 16; // The number that we need to test the proper nonce for bitcoin hash regulation.
+parameter num_nonce = 16; // The number that we need to test the proper nonce for bitcoin hash regulation.
 //parameter num_words = 19; // Bitcoin data is constructed by 20 words containing the nonce, but for the last word, we need to test it by ourselve. So we only need to load 19 words from memory.
 
 // State definition
@@ -21,7 +21,7 @@ logic [31:0] final_hashes [15:0];  // Stores the final H0 result for all 16 work
 // Control signals and Counters
 logic [15:0] offset;  // Memory address offset
 logic [4:0] i;  // General purpose index counter
-logic [6:0] master_step;  // Counter for Master's internal SHA-256 operation (Phase 1)
+logic [6:0] master_tstep;  // Counter for Master's internal SHA-256 operation (Phase 1)
 
 // Workers control signals (from Master to Workers)
 logic worker_start;  // The start pulse for workers
@@ -63,11 +63,47 @@ parameter logic [31:0] initial_hashes[0:7] = '{
 };
 
 
+//Function declarations for Phase 1
+
+//Word expansion function using Sliding window method
+function logic [31:0] word_expan (input logic [31:0]w_arr[0:15]);  //w_arr 代表0~15的座位,跟SHA256中 w 代表實際數字本身不一樣
+    logic [31:0] s0,s1;
+    
+    s0 = (rightrotate(w_arr[1], 7)) ^ (rightrotate(w_arr[1], 18)) ^ (rightshift(w_arr[1], 3));
+	s1 = (rightrotate(w_arr[14], 17)) ^ (rightrotate(w_arr[14], 19)) ^ (rightshift(w_arr[14], 10));
+    word_expan = w_arr[0] + s0 + w_arr[9] + s1;
+endfunction
+
+// SHA-256 Compression Function
+function logic [255:0] sha256_op(input logic [31:0] a, b, c, d, e, f, g, h, w, k_val);  // 呼叫者必須先把 k[t] 查好，傳入具體的數值 (32-bit)
+    logic [31:0] S1, S0, ch, maj, t1, t2;
+    S1 = rightrotate(e, 6) ^ rightrotate(e, 11) ^ rightrotate(e, 25);
+    ch = (e & f) ^ ((~e) & g);
+    t1 = h + S1 + ch + k_val + w;
+    S0 = rightrotate(a, 2) ^ rightrotate(a, 13) ^ rightrotate(a, 22);
+    maj = (a & b) ^ (a & c) ^ (b & c);
+    t2 = S0 + maj;
+    sha256_op = {t1 + t2, a, b, c, d + t1, e, f, g};
+endfunction
+
+// Right rotation function
+function logic [31:0] rightrotate(input logic [31:0] x,
+                                  input logic [ 7:0] r);
+    rightrotate = (x >> r) | (x << (32 - r));
+endfunction
+
+//Right shift function for word expansion.
+function logic [31:0] rightshift(input logic [31:0] x,
+					             input logic [ 7:0] r);
+	rightshift = (x >> r);
+endfunction
+
+
 // Memory interface logic
 assign mem_clk = clk;
 assign mem_addr = (state == READ) ? (message_addr + offset) : (output_addr + offset);  // Address Selection: Read from message_addr, Write to output_addr
 assign mem_we = (state == WRITE) ? 1'b1 : 1'b0;
-assign mem_write_data = final_hashes[i];  //When i=0, write final_hashes[0] (ie. H0), to memory ; i=1, write H1; ... i=7, write H7
+ 
 //Prepare common message tail (Words 16, 17, 18) for Block 2
 assign message_tail = '{message_buffer[16], message_buffer[17], message_buffer[18]};  //assign is like a forever wire connection. Here we connect message_tail to message_buffer[16~18]
 
@@ -80,10 +116,10 @@ generate
         always_comb begin
             // Select input hash based on phase. create a MUX behaviorally
             if (worker_phase_sel == 0) begin
-                worker_hin[n] <= phase1_hashes;
+                worker_hin[n] = phase1_hashes;
             end
             else begin
-                worker_hin[n] <= intermediate_hashes;
+                worker_hin[n] = intermediate_hashes[n];
             end
         end
         //Instantiate Worker module
@@ -119,9 +155,9 @@ always_ff @(posedge clk, negedge reset_n)begin
         state <= IDLE;
         done <=0;
         mem_we <= 0;
-        offset <= 0
+        offset <= 0;
         i <= 0;
-        master_step <= 0;
+        master_tstep <= 0;
         worker_start <= 0;
         worker_phase_sel <= 0;
     end
@@ -148,7 +184,7 @@ always_ff @(posedge clk, negedge reset_n)begin
 
                 if (offset > 0 && i < 19)begin
                     message_buffer[i] <= mem_read_data;  // CANNOT USE "FOR" LOOP HERE BECAUSE reading from memory is sequential, not parallel. If we use for loop, it means reading all 19 words at the same time.
-                    i = i + 1; 
+                    i <= i + 1; 
                 end
                 /*
                 First cycle offset=0, just set up address
@@ -159,7 +195,7 @@ always_ff @(posedge clk, negedge reset_n)begin
                 //Transition to Phase 1 when reading is complete
                 if ( i == 19 )begin
                     state <= PHASE1;
-                    master_step <= 0;
+                    master_tstep <= 0;
                     // Prepare initial hash values for Phase 1
                     {a, b, c, d, e, f, g, h_reg} <= {initial_hashes[0], initial_hashes[1], initial_hashes[2], initial_hashes[3],
                                                     initial_hashes[4], initial_hashes[5], initial_hashes[6], initial_hashes[7]};
@@ -170,25 +206,58 @@ always_ff @(posedge clk, negedge reset_n)begin
 
 
             PHASE1: begin
-            
-            state <= PHASE2;
-            worker_start <= 1;   // Send Start Pulse for Phase 2
-            worker_phase_sel <= 0;  // Set Phase Select to 0 for Phase 2
-            end   
+                logic [31:0] current_w;
+                
+                // 1.W expansion Logic
+                if (master_tstep < 16) begin
+                    current_w = w_phase1[master_tstep];
+                end
+                else begin
+                    current_w = word_expan(w_phase1);
+                end
 
-
-            PHASE2: begin
-                // Workers are running Phase 2 (64 cycles). Wait for completion.
-                // check worker_finish signals. (checking only worker[0] is sufficient since all start/finish synchronously同步發生)
-                if (worker_finish[0] == 1) begin
-                    // Collect intermediate hashes from all workers
-                    for (int j=0; j<16; j=j+1) begin
-                        intermediate_hashes[j] <= worker_hout[j];  //在程式碼中寫下 intermediate_hashes[k] 時你指定了第一維->選定第 k 層抽屜。你沒指定第二維->這代表你指的是 「這整層抽屜裡面的所有東西」。
+                // 2.Compression logic
+                if (master_tstep <64)begin
+                    //A. SHA256 operation
+                   {a,b,c,d,e,f,g,h_reg} <= sha256_op(a,b,c,d,e,f,g,h_reg,current_w,k[master_tstep] ); //directly input "k[master_tstep]"(the value of k at index master_tstep) into the function
+                    //B. Update sliding window for W
+                    if (master_tstep >16) begin  //only start to shift when master_tstep>16
+                        for (int x=0; x<15; x++) w_phase1[x] <= w_phase1[x+1]; // shift every bit left
+                        w_phase1[15] <= current_w;  //load the new current_w into the last position
                     end
                     
+                    master_tstep <= master_tstep + 1;
+                end
+                else begin
+                    // 3. Phase 1 complete, update Phase 1 hash output
+                    phase1_hashes[0] <= a + initial_hashes[0];
+                    phase1_hashes[1] <= b + initial_hashes[1];
+                    phase1_hashes[2] <= c + initial_hashes[2];
+                    phase1_hashes[3] <= d + initial_hashes[3];
+                    phase1_hashes[4] <= e + initial_hashes[4];
+                    phase1_hashes[5] <= f + initial_hashes[5];
+                    phase1_hashes[6] <= g + initial_hashes[6];
+                    phase1_hashes[7] <= h_reg + initial_hashes[7];
+
+                    // 4. Prepare for Phase 2
+                    worker_phase_sel <= 0; // Phase 2
+                    worker_start <= 1;     // Start workers
+                    state <= PHASE2;       // Directly go to PHASE2 to wait for workers to finish
+                end        
+            end
+
+
+            PHASE2:begin
+                if (worker_finish[0] == 1) begin // Check only worker 0's finish signal, because all workers start at the same time and have the same processing time.
+                    // Collect intermediate hashes from all workers
+                    for (int j=0; j<16; j=j+1) begin
+                        intermediate_hashes[j] <= worker_hout[j];  // Collect all H0-H7 from each worker
+                    end
+
+                    // Prepare for Phase 3
+                    worker_phase_sel <= 1; // Phase 3
+                    worker_start <= 1;     // Start workers again
                     state <= PHASE3;
-                    worker_start <= 1;  // Send Start Pulse for Phase 3
-                    worker_phase_sel <= 1; // Set Phase Select to 1 for Phase 3
                 end
             end
 
@@ -208,266 +277,18 @@ always_ff @(posedge clk, negedge reset_n)begin
 
 
             WRITE: begin
-
+                if (i <16 )begin
+                    offset <= i;
+                    mem_write_data <= final_hashes[i]; //When i=0, write final_hashes[0] (ie. H0), to memory ; i=1, write H1; ... i=7, write H7
+                    i <= i + 1;
+                end
+                else begin
+                    done <= 1;
+                    state <= IDLE;
+                end
             end
         
         endcase
     end
 end
-endmodule
-
-_______寫到這___
-
-
-
-
-
-
-
-// Function to determine number of blocks in memory to fetch
-function logic [15:0] determine_num_blocks(input integer size);
-
-    logic [63:0] total_length; // Maximum input bits length for Bitcoin_hash.
-    total_length = (size * 32) + 1 + 64; // The total length would be num of words*its size + one padding 1 + 64 size.
-    determine_num_blocks = ((total_length + 511)/512); // Doing a ceiling, and other missing bits between padding 1 and size would be 0.
-
-endfunction
-
-// SHA256 hash round.
-function logic [255:0] sha256_op(input logic [31:0] a, b, c, d, e, f, g, h, w,
-                                 input logic [ 7:0] t);
-    logic [31:0] S1, S0, ch, maj, t1, t2; // internal signals
-    begin
-    S1 = rightrotate(e, 6) ^ rightrotate(e, 11) ^ rightrotate(e, 25);
-    ch = (e & f) ^ ((~e) & g);
-    t1 = h + S1 + ch + k[t] + w;
-    S0 = rightrotate(a, 2) ^ rightrotate(a, 13) ^ rightrotate(a, 22);
-    maj = (a & b) ^(a & c) ^ (b & c);
-    t2 = S0 + maj;
-    sha256_op = {t1 + t2, a, b, c, d + t1, e, f, g};
-    end
-endfunction
-
-//Word expansion before doing SHA256 hash round.
-function logic [31:0] word_expan(input logic [ 7:0] t);
-	logic [31:0] s0,s1;
-    begin
-	s0 = (rightrotate(w[t-15], 7)) ^ (rightrotate(w[t-15], 18)) ^ (rightshift(w[t-15], 3));
-	s1 = (rightrotate(w[t-2], 17)) ^ (rightrotate(w[t-2], 19)) ^ (rightshift(w[t-2], 10));
-	word_expan = w[t-16] + s0 + w[t-7] + s1;
-    end
-endfunction
-
-// Right rotation function
-function logic [31:0] rightrotate(input logic [31:0] x,
-                                  input logic [ 7:0] r);
-    rightrotate = (x >> r) | (x << (32 - r));
-endfunction
-
-//Right shift function for word expansion.
-function logic [31:0] rightshift(input logic [31:0] x,
-					             input logic [ 7:0] r);
-	rightshift = (x >> r);
-endfunction
-
-
-
-
-// Bitcoin hash FSM 
-// Get a BLOCK from the memory, COMPUTE Hash output using SHA256 function
-// and write back hash value back to memory
-always_ff @(posedge clk, negedge reset_n)
-    begin
-    if (!reset_n) begin
-        cur_we <= 1'b0;
-        offset <= 0;
-        state <= IDLE;
-        h0 <= 32'h6a09e667;
-        h1 <= 32'hbb67ae85;
-        h2 <= 32'h3c6ef372;
-        h3 <= 32'ha54ff53a;
-        h4 <= 32'h510e527f;
-        h5 <= 32'h9b05688c;
-        h6 <= 32'h1f83d9ab;
-        h7 <= 32'h5be0cd19;
-    end 
-    
-    else case (state)
-	 
-	IDLE: begin  // Initialize hash values h0 to h7 and a to h, other variables and memory we, address offset, etc
-        if(start) begin 
-			i <= 0;
-			j <= 0;
-			tstep <= 0;
-			a <= h0;
-			b <= h1;
-			c <= h2;
-			d <= h3;
-			e <= h4;
-			f <= h5;
-			g <= h6;
-			h <= h7;
-			cur_we <= 0;
-			offset <= 0;  //We need address and offset one cycle beyond the read process to let it load the message.
-			cur_addr <= message_addr; //We need address and offset one cycle beyond the read process to let it load the message.
-			
-            for(int z = 0; z < 64; z++) begin
-				w[z] <= 32'b0;
-			end
-			state <= READ;
-		  end
-    end
-
-	READ: begin // Read the input message from memory.
-		offset <= offset+1;
-		cur_addr <= message_addr;
-		if(i <= num_words) begin
-			i <= i + 1;
-			if (i != 0) begin
-				message[i-1] <= mem_read_data; //Message need one more cycle for loading. For example, at offset = 1, the offset = 0 will be loaded.
-			end
-		end
-		else begin
-		    i <= 0;
-		    state <= BLOCK;
-		end
-	end
-    
-
-    PHASE1: begin
-
-
-    worker_start <= 1;  // Send Start Pulse, so when go to PHASE2, all workers can start computing immediately.    
-    end
-
-
-   
-    
-    
-    
-    
-
-
-
-
-
-
-
-
-
-
-
-    
-    
-    BLOCK: begin
-	// Fetch message in 512-bit block size
-	// For each of 512-bit block initiate hash value computation
-	if (j == num_blocks) begin // Detecting whether the process is finished. If so, then go to write process.
-		hi[0] <= h0; 
-		hi[1] <= h1; 
-		hi[2] <= h2; 
-		hi[3] <= h3;
-		hi[4] <= h4; 
-		hi[5] <= h5; 
-		hi[6] <= h6; 
-		hi[7] <= h7;
-		i <= 0;           
-		cur_we <= 1'b1;
-		state <= WRITE;
-	end
-    else begin
-        for (int k = 0; k < 16; k++) begin // 16 message a run.
-            int cur_i;
-            cur_i = 16 * j + k; //Global counter for counting which position should start.
-				
-            if ((j == num_blocks - 1) && (k >= 14)) begin // Detect for the last two message of the message size.
-                if (k == 14) w[k] <= bitsize[63:32];
-                if (k == 15) w[k] <= bitsize[31:0];
-            end
-            
-            else if (cur_i < num_words) begin // Detect for the messaages that are not loaded. 
-                w[k] <= message[cur_i];
-            end
-            
-            else if (cur_i == num_words) begin 
-                w[k] <= nonce;
-					 nonce <= nonce + 1; // Testing different nonce from 0 to 15.
-            end
-            else if (cur_i == num_words + 1) begin// Detect for the 1 padding after the input message.
-					 w[k] <= 32'h80000000;
-				end
-            else begin // Else are 32-bit 0 padding.
-                w[k] <= 32'b0;
-            end
-        end 
-
-        tstep <= 0; 
-        a <= h0; 
-		b <= h1; 
-		c <= h2; 
-		d <= h3;
-        e <= h4; 
-		f <= h5; 
-		g <= h6; 
-		h <= h7; // Before every operation, the a to h value should update to the previos hash value.
-        state <= COMPUTE;
-    end
-	end
-
-    // For each block compute hash function
-    // Go back to BLOCK stage after each block hash computation is completed and if
-    // there are still number of message blocks available in memory otherwise
-    // move to WRITE stage
-    COMPUTE: begin
-	// 64 processing rounds steps for 512-bit block 
-		logic [31:0] current_wt;
-		    if(tstep < 64) begin
-			    if (tstep < 16) begin
-				    current_wt = w[tstep]; // Set up a blocking statement for immediately updating message.
-			    end
-			else begin
-				current_wt = word_expan(tstep);
-				w[tstep] <= current_wt;
-		    end
-			
-            {a,b,c,d,e,f,g,h} <= sha256_op(a,b,c,d,e,f,g,h, current_wt, tstep);
-			tstep <= tstep + 1;
-		    end
-		    
-            else begin
-                h0 <= h0 + a;
-                h1 <= h1 + b;
-                h2 <= h2 + c;
-                h3 <= h3 + d;
-                h4 <= h4 + e;
-                h5 <= h5 + f;
-                h6 <= h6 + g;
-                h7 <= h7 + h;
-                j  <= j + 1;
-                tstep <= 0;
-                state <= BLOCK;
-            end
-    end
-
-    // h0 to h7 each are 32 bit hashes, which makes up total 256 bit value
-    // h0 to h7 after compute stage has final computed hash value
-    // write back these h0 to h7 to memory starting from output_addr
-    WRITE: begin
-		if(i < 8) begin
-			offset <= i;
-			cur_addr <= output_addr;
-			cur_write_data <= hi[i];
-			i <= i + 1;
-		end
-		else begin
-			cur_we <= 1'b0;
-			state <= IDLE;
-		end
-    end
-    endcase
-    end
-
-// Generate done when SHA256 hash computation has finished and moved to IDLE state
-assign done = (state == IDLE);
-
 endmodule
