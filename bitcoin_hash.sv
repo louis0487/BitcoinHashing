@@ -14,7 +14,7 @@ enum logic [4:0] {IDLE, READ, PHASE1, PHASE2, PHASE3, WRITE} state;
 
 // Memory and Data buffers
 logic [31:0] message_buffer [0:18];  // Stores the loaded 19 words (Words 0~18)
-logic [31:0] phase1_hashes [0:7];  // Stores the result of Phase 1 computed by Master
+logic [31:0] phase1_hashes [7:0];  // Stores the result of Phase 1 computed by Master
 logic [31:0] intermediate_hashes [15:0][7:0];  // Stores Phase 2 results (H0-H7) for all 16 workers
 logic [31:0] final_hashes [15:0];  // Stores the final H0 result for all 16 workers
 
@@ -35,7 +35,7 @@ logic [31:0] worker_hout [15:0][7:0];  // Output Hash (ho) for 16 workers
 
 // Master internal calculation variable for PHASE1
 logic [31:0] a, b, c, d, e, f, g, h_reg;  //雖然 a, b, c, d, e, f, g 都直接用了單一字母，但唯獨 h 改成 h_reg，是因為 h 在 Verilog 語言中太過特殊（Hex 前綴）且容易與陣列名稱打架。這是一種防禦性的 Coding Style（編碼風格), 且也比較好debug 
-logic [31:0] w_phase1 [0:15];  // 這啥???  Sliding window for Master's W expansion
+logic [31:0] w_phase1 [0:15];  //Sliding window for Master's W expansion
 
 
 // SHA256 K constants
@@ -105,7 +105,7 @@ assign mem_addr = (state == READ) ? (message_addr + offset) : (output_addr + off
 assign mem_we = (state == WRITE) ? 1'b1 : 1'b0;
  
 //Prepare common message tail (Words 16, 17, 18) for Block 2
-assign message_tail = '{message_buffer[16], message_buffer[17], message_buffer[18]};  //assign is like a forever wire connection. Here we connect message_tail to message_buffer[16~18]
+assign msg_tail = '{message_buffer[16], message_buffer[17], message_buffer[18]};  //assign is like a forever wire connection. Here we connect message_tail to message_buffer[16~18]
 
 
 // Instantiate 16 Worker modules for Phase 2 and Phase 3
@@ -154,7 +154,6 @@ always_ff @(posedge clk, negedge reset_n)begin
     if (!reset_n) begin
         state <= IDLE;
         done <=0;
-        mem_we <= 0;
         offset <= 0;
         i <= 0;
         master_tstep <= 0;
@@ -221,7 +220,7 @@ always_ff @(posedge clk, negedge reset_n)begin
                     //A. SHA256 operation
                    {a,b,c,d,e,f,g,h_reg} <= sha256_op(a,b,c,d,e,f,g,h_reg,current_w,k[master_tstep] ); //directly input "k[master_tstep]"(the value of k at index master_tstep) into the function
                     //B. Update sliding window for W
-                    if (master_tstep >16) begin  //only start to shift when master_tstep>16
+                    if (master_tstep >= 16) begin  //only start to shift when master_tstep>15
                         for (int x=0; x<15; x++) w_phase1[x] <= w_phase1[x+1]; // shift every bit left
                         w_phase1[15] <= current_w;  //load the new current_w into the last position
                     end

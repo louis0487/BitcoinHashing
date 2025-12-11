@@ -3,13 +3,13 @@ module simplified_sha256 #(parameter integer NUM_OF_WORDS = 20)(
  input logic  phase_sel,
  input logic  [3 :0] nonce,
  input logic  [31:0] hi[8],
- input logic  [31:0] msg_tail [3],
+ input logic  [31:0] msg_tail [0:2],
  output logic [31:0] ho[8],
  output logic finish
  );
 
 // FSM state variables 
-enum logic [2:0] { PHASE2, PHASE3, OUTPUT} state;
+enum logic [2:0] { IDLE, PHASE2, PHASE3, OUTPUT} state;
 
 // NOTE : Below mentioned frame work is for reference purpose.
 // Local variables might not be complete and you might have to add more variables
@@ -97,15 +97,19 @@ begin
 		g <= hi[6];
 		h <= hi[7];
 		finish <= 0;
-		if(phase_sel == 0) begin
-		state <= PHASE2;
-		end
-		else begin
-		state <= PHASE3;
-		end
 	end
+	
 	else begin
 		case (state)
+		IDLE: begin
+			finish <= 0; //避免他還沒開始work就用到phase2的finish signal.
+			if(phase_sel == 0) begin
+				state <= PHASE2;
+			end
+			else begin
+				state <= PHASE3;
+			end
+		end
 		PHASE2: begin
 	// 64 processing rounds steps for 512-bit block 
 			logic [31:0] current_wt;
@@ -201,6 +205,7 @@ begin
 			ho[6] <= h6;
 			ho[7] <= h7;
 			finish <= 1;
+			state <= IDLE;
 		end
 		default: begin
 			finish <= 0;
