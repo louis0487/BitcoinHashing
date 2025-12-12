@@ -17,6 +17,7 @@ enum logic [2:0] { IDLE, PHASE2, PHASE3, OUTPUT} state;
 
 // Local variables
 logic [31:0] w[16];
+logic [31:0] current_wt;
 logic [31:0] a, b, c, d, e, f, g, h;
 logic [31:0] h0, h1, h2, h3, h4, h5, h6, h7;
 logic [ 7:0] tstep;
@@ -83,19 +84,29 @@ endfunction
 // SHA-256 FSM 
 // Get a BLOCK from the memory, COMPUTE Hash output using SHA256 function
 // and write back hash value back to memory
+always_comb begin
+    current_wt = 32'd0; // Default
+    if (state == PHASE2) begin
+        if (tstep < 3)       current_wt = msg_tail[tstep];
+        else if (tstep == 3) current_wt = {28'd0, nonce}; // 注意這裡的 Endianness
+        else if (tstep == 4) current_wt = 32'h80000000;
+		  else if (tstep < 15) current_wt = 32'h00000000;
+        else if (tstep == 15) current_wt = 32'd640;
+        else current_wt = word_expan(w);
+    end
+    else if (state == PHASE3) begin
+        if (tstep < 8) current_wt = hi[tstep]; // Set up a blocking statement for immediately updating message.
+		  else if (tstep == 8) current_wt = 32'h80000000;
+		  else if (tstep < 15) current_wt = 32'h00000000;
+		  else if (tstep == 15) current_wt = 32'd256;
+		  else current_wt = word_expan(w);
+    end
+end
 
 always_ff @(posedge clk)
 begin
 	if (start) begin
       tstep <= 0;
-		a <= hi[0];
-		b <= hi[1];
-		c <= hi[2];
-		d <= hi[3];
-		e <= hi[4];
-		f <= hi[5];
-		g <= hi[6];
-		h <= hi[7];
 		finish <= 0;
 		state <= IDLE;
 	end
@@ -106,39 +117,48 @@ begin
 			finish <= 0; //避免他還沒開始work就用到phase2的finish signal.
 			if(phase_sel == 0) begin
 				state <= PHASE2;
+				a <= hi[0];
+				b <= hi[1];
+				c <= hi[2];
+				d <= hi[3];
+				e <= hi[4];
+				f <= hi[5];
+				g <= hi[6];
+				h <= hi[7];
 			end
 			else begin
 				state <= PHASE3;
+				a <= 32'h6a09e667;
+				b <= 32'hbb67ae85;
+				c <= 32'h3c6ef372;
+				d <= 32'ha54ff53a;
+				e <= 32'h510e527f;
+				f <= 32'h9b05688c;
+				g <= 32'h1f83d9ab;
+				h <= 32'h5be0cd19;
 			end
 		end
 		PHASE2: begin
 	// 64 processing rounds steps for 512-bit block 
-			logic [31:0] current_wt;
 			if(tstep < 64) begin
 				if (tstep < 3) begin
-					current_wt = msg_tail[tstep]; // Set up a blocking statement for immediately updating message.
 					w[tstep] <= msg_tail[tstep];
 				end
 				else if(tstep == 3) begin
-					current_wt = nonce;
 					w[tstep] <= nonce;
 					
 				end
 				else if(tstep == 4) begin
-					current_wt = 32'h80000000;
 					w[tstep] <= 32'h80000000;
 				end
 				else if(tstep < 15) begin
-					current_wt = 32'h00000000;
 					w[tstep] <= 32'h00000000;
 				end
 				else if(tstep == 15) begin
-					current_wt = 32'd640;
 					w[tstep] <= 32'd640;
 				end
 				else begin
-					current_wt = word_expan(w);
-					for (int x=0; x<15; x++) begin
+					for (int x=0; x < 15; x++) begin
 						w[x] <= w[x+1]; // shift every bit left
 					end
                w[15] <= current_wt;  //load the new current_w into the last position
@@ -161,27 +181,21 @@ begin
 		end
 		PHASE3: begin
 	// 64 processing rounds steps for 512-bit block 
-			logic [31:0] current_wt;
 			if(tstep < 64) begin
 				if (tstep < 8) begin
-					current_wt = hi[tstep]; // Set up a blocking statement for immediately updating message.
 					w[tstep] <= hi[tstep];
 				end
 				else if (tstep == 8) begin
-					current_wt = 32'h80000000;
 					w[tstep] <= 32'h80000000;
 				end
 				else if (tstep < 15) begin
-					current_wt = 32'h00000000;
 					w[tstep] <= 32'h00000000;
 				end
 				else if (tstep == 15) begin
-					current_wt = 32'd256;
 					w[tstep] <= 32'd256;
 				end
 				else begin
-					current_wt = word_expan(w);
-					for (int x=0; x<15; x++) begin
+					for (int x=0; x < 15; x++) begin
 						w[x] <= w[x+1]; // shift every bit left
 					end
                w[15] <= current_wt;  //load the new current_w into the last position
@@ -190,14 +204,14 @@ begin
 				tstep <= tstep + 1;
 			end
 			else begin
-				h0 <= hi[0] + a;
-				h1 <= hi[1] + b;
-				h2 <= hi[2] + c;
-				h3 <= hi[3] + d;
-				h4 <= hi[4] + e;
-				h5 <= hi[5] + f;
-				h6 <= hi[6] + g;
-				h7 <= hi[7] + h;
+				h0 <= 32'h6a09e667 + a; 
+				h1 <= 32'hbb67ae85 + b;
+				h2 <= 32'h3c6ef372 + c;
+				h3 <= 32'ha54ff53a + d;
+				h4 <= 32'h510e527f + e;
+				h5 <= 32'h9b05688c + f;
+				h6 <= 32'h1f83d9ab + g;
+				h7 <= 32'h5be0cd19 + h;
 				tstep <= 0;
 				state <= OUTPUT;
 			end

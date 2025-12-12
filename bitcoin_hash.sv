@@ -13,29 +13,21 @@ parameter num_nonce = 16; // The number that we need to test the proper nonce fo
 enum logic [4:0] {IDLE, READ, PHASE1, PHASE2, PHASE3, WRITE} state;
 
 // Memory and Data buffers
+logic [31:0] msg_tail[3];
 logic [31:0] message_buffer [0:18];  // Stores the loaded 19 words (Words 0~18)
 logic [31:0] phase1_hashes [7:0];  // Stores the result of Phase 1 computed by Master
-logic [31:0] intermediate_hashes [15:0][7:0];  // Stores Phase 2 results (H0-H7) for all 16 workers
 logic [31:0] final_hashes [15:0];  // Stores the final H0 result for all 16 workers
 
 // Control signals and Counters
 logic [15:0] offset;  // Memory address offset
 logic [4:0] i;  // General purpose index counter
-logic [6:0] master_tstep;  // Counter for Master's internal SHA-256 operation (Phase 1)
-
-// Workers control signals (from Master to Workers)
-logic worker_start;  // The start pulse for workers
-logic worker_phase_sel; // 0 for Phase 2, 1 for Phase 3
-
-// Worker inner data interface (Arrays for connecting 16 instances)
-logic [31:0] worker_hin [15:0][7:0];  // Input Hash (hi) for 16 workers
-logic [31:0] msg_tail [0:2];  // Block 2 message tail (Words 16, 17, 18).  寫[0:2] 而不是 [2:0] 因為要對應順著數 i.e. word16=index0, word17=index1, word18=index2
-logic worker_finish [15:0];  // Finish signal from 16 workers
-logic [31:0] worker_hout [15:0][7:0];  // Output Hash (ho) for 16 workers
+logic [6:0] tstep;  // Counter for Master's internal SHA-256 operation (Phase 1)
 
 // Master internal calculation variable for PHASE1
-logic [31:0] a, b, c, d, e, f, g, h_reg;  //雖然 a, b, c, d, e, f, g 都直接用了單一字母，但唯獨 h 改成 h_reg，是因為 h 在 Verilog 語言中太過特殊（Hex 前綴）且容易與陣列名稱打架。這是一種防禦性的 Coding Style（編碼風格), 且也比較好debug 
-logic [31:0] w_phase1 [0:15];  //Sliding window for Master's W expansion
+logic [31:0] a[16], b[16], c[16], d[16], e[16], f[16], g[16], h_reg[16];  //雖然 a, b, c, d, e, f, g 都直接用了單一字母，但唯獨 h 改成 h_reg，是因為 h 在 Verilog 語言中太過特殊（Hex 前綴）且容易與陣列名稱打架。這是一種防禦性的 Coding Style（編碼風格), 且也比較好debug 
+logic [31:0] a_phase1, b_phase1, c_phase1, d_phase1, e_phase1, f_phase1, g_phase1, h_phase1;
+logic [31:0] w[15:0];  //Sliding window for Master's W expansion
+logic [31:0] wt[15:0][15:0];
 
 
 // SHA256 K constants
@@ -109,47 +101,6 @@ assign msg_tail[0] = message_buffer[16];  //assign is like a forever wire connec
 assign msg_tail[1] = message_buffer[17];
 assign msg_tail[2] = message_buffer[18];
 
-// Instantiate 16 Worker modules for Phase 2 and Phase 3
-genvar n;
-generate
-    for (n = 0; n < num_nonce; n = n + 1) begin: workers
-        // Combinational Logic of Input Mux for worker_hin
-        always_comb begin
-            // Select input hash based on phase. create a MUX behaviorally
-            if (worker_phase_sel == 0) begin
-                worker_hin[n] = phase1_hashes;
-            end
-            else begin
-                worker_hin[n] = intermediate_hashes[n];
-            end
-        end
-        //Instantiate Worker module
-        sha256_worker worker_inst (
-            .clk(clk),
-            .start(worker_start),
-            .phase_sel(worker_phase_sel),
-            .nonce(n[3:0]),  //only need the 4 LSB bits of n(0 to 15). n=0(nonce=0)->nonce=0 input to worker1 ; n=1(nonce=1)->nonce=1 input to worker2
-            .hi(worker_hin[n]),  // When n=0, worker_hin[0] goes to the first worker ; n=1, worker_hin[1] goes to second worker
-            .msg_tail(msg_tail[0:2]),
-            .ho(worker_hout[n]),
-            .finish(worker_finish[n])
-        );       
-    end
-endgenerate
-/*
-在 generate區塊中直接寫 if，這叫做 Generate If。 它的判斷是在 「晶片還沒做出來之前 (編譯/合成時)」 進行的
-邏輯是： 編譯器會看這個條件，如果是真，就把牆壁蓋在左邊；如果是假，就把牆壁蓋在右邊
-條件必須是 「常數 (Parameter/Genvar)」。也就是說，在蓋房子的時候就必須決定好，蓋好之後就 不能動了
-但 worker_phase_sel 是個會變動的signal (在run time會變0 or 1決定為Phase2 or 3)
-所以要加always_comb 當作Run Time時的切換開關(由內部if else 生成 MUX) 不能只用 generate 然後接 if
-*/
-/*
-為什麼不直接寫 .nonce(n) ?
-n 是什麼？ n 是一個 genvar (Generate Variable)。在 SystemVerilog 中，genvar 在運算過程中通常被視為一個 32-bit 的整數 (Integer)。
-Worker 的接口是什麼？ 你的 sha256_worker 模組裡面，nonce 這個 Input Port 被定義為： input logic [3:0] nonce
-如果寫 .nonce(n) 會發生什麼事？ 你試圖把一個 32-bit 的整數 (n) 塞進一個 4-bit 的接口 (nonce)。 這會導致位元寬度不匹配 (Bit-Width Mismatch) 的問題，可能會引發合成錯誤或警告。
-*/
-
 
 always_ff @(posedge clk, negedge reset_n)begin
     if (!reset_n) begin
@@ -157,16 +108,9 @@ always_ff @(posedge clk, negedge reset_n)begin
         done <=0;
         offset <= 0;
         i <= 0;
-        master_tstep <= 0;
-        worker_start <= 0;
-        worker_phase_sel <= 0;
+        tstep <= 0;
     end
     else begin
-        // Clear start pulse after one cycle. If don't clear, the workers will keep restarting and always stuck at tstep=0.
-        if (worker_start) begin
-            worker_start <= 0;  
-        end
-        
         case(state)
             IDLE: begin
                 done <= 0;
@@ -195,12 +139,14 @@ always_ff @(posedge clk, negedge reset_n)begin
                 //Transition to Phase 1 when reading is complete
                 if ( i == 19 )begin
                     state <= PHASE1;
-                    master_tstep <= 0;
+                    tstep <= 0;
                     // Prepare initial hash values for Phase 1
-                    {a, b, c, d, e, f, g, h_reg} <= {initial_hashes[0], initial_hashes[1], initial_hashes[2], initial_hashes[3],
+						  {a_phase1, b_phase1, c_phase1, d_phase1, e_phase1, f_phase1, g_phase1, h_phase1} <= {initial_hashes[0], initial_hashes[1], initial_hashes[2], initial_hashes[3],
                                                     initial_hashes[4], initial_hashes[5], initial_hashes[6], initial_hashes[7]};
                     // Load first 16 words into w_phase1 for Phase 1 processing
-                    w_phase1[0:15] <= message_buffer[0:15]; 
+                    for (int k = 0; k < 16; k++ ) begin 
+							w[k] <= message_buffer[k]; 
+						  end
                 end
             end
 
@@ -209,79 +155,142 @@ always_ff @(posedge clk, negedge reset_n)begin
                 logic [31:0] current_w;
                 
                 // 1.W expansion Logic
-                if (master_tstep < 16) begin
-                    current_w = w_phase1[master_tstep];
+                if (tstep < 16) begin
+                    current_w = w[tstep];
                 end
                 else begin
-                    current_w = word_expan(w_phase1);
+                    current_w = word_expan(w);
                 end
 
                 // 2.Compression logic
-                if (master_tstep < 64)begin
+                if (tstep < 64)begin
                     //A. SHA256 operation
-                   {a,b,c,d,e,f,g,h_reg} <= sha256_op(a,b,c,d,e,f,g,h_reg,current_w,k[master_tstep] ); //directly input "k[master_tstep]"(the value of k at index master_tstep) into the function
+                   {a_phase1, b_phase1, c_phase1, d_phase1, e_phase1, f_phase1, g_phase1, h_phase1} <= sha256_op(a_phase1, b_phase1, c_phase1, d_phase1, e_phase1, f_phase1, g_phase1, h_phase1,current_w,k[tstep] ); //directly input "k[master_tstep]"(the value of k at index master_tstep) into the function
                     //B. Update sliding window for W
-                    if (master_tstep >= 16) begin  //only start to shift when master_tstep>15
-                        for (int x=0; x<15; x++) begin
-									w_phase1[x] <= w_phase1[x+1]; // shift every bit left
+                    if (tstep >= 16) begin  //only start to shift when master_tstep>15
+                        for (int x=0; x < 15; x++) begin
+									w[x] <= w[x+1]; // shift every bit left
 								end
-                        w_phase1[15] <= current_w;  //load the new current_w into the last position
+                        w[15] <= current_w;  //load the new current_w into the last position
                     end
                     
-                    master_tstep <= master_tstep + 1;
+                    tstep <= tstep + 1;
                 end
                 else begin
                     // 3. Phase 1 complete, update Phase 1 hash output
-                    phase1_hashes[0] <= a + initial_hashes[0];
-                    phase1_hashes[1] <= b + initial_hashes[1];
-                    phase1_hashes[2] <= c + initial_hashes[2];
-                    phase1_hashes[3] <= d + initial_hashes[3];
-                    phase1_hashes[4] <= e + initial_hashes[4];
-                    phase1_hashes[5] <= f + initial_hashes[5];
-                    phase1_hashes[6] <= g + initial_hashes[6];
-                    phase1_hashes[7] <= h_reg + initial_hashes[7];
-
-                    // 4. Prepare for Phase 2
-                    worker_phase_sel <= 0; // Phase 2
-                    worker_start <= 1;     // Start workers
+                    phase1_hashes[0] <= a_phase1 + initial_hashes[0];
+                    phase1_hashes[1] <= b_phase1 + initial_hashes[1];
+                    phase1_hashes[2] <= c_phase1 + initial_hashes[2];
+                    phase1_hashes[3] <= d_phase1 + initial_hashes[3];
+                    phase1_hashes[4] <= e_phase1 + initial_hashes[4];
+                    phase1_hashes[5] <= f_phase1 + initial_hashes[5];
+                    phase1_hashes[6] <= g_phase1 + initial_hashes[6];
+                    phase1_hashes[7] <= h_phase1 + initial_hashes[7];
+						  
+						  for (int k = 0; k < 16; k++) begin
+                        a[k] <= a_phase1 + initial_hashes[0]; // 直接拿上面的運算結果載入
+                        b[k] <= b_phase1 + initial_hashes[1];
+                        c[k] <= c_phase1 + initial_hashes[2];
+                        d[k] <= d_phase1 + initial_hashes[3];
+                        e[k] <= e_phase1 + initial_hashes[4];
+                        f[k] <= f_phase1 + initial_hashes[5];
+                        g[k] <= g_phase1 + initial_hashes[6];
+                        h_reg[k] <= h_phase1 + initial_hashes[7];
+                    end
                     state <= PHASE2;       // Directly go to PHASE2 to wait for workers to finish
+						  tstep <= 0;
                 end        
             end
 
 
             PHASE2:begin
-                if (worker_finish[0] == 1) begin // Check only worker 0's finish signal, because all workers start at the same time and have the same processing time.
-                    // Collect intermediate hashes from all workers
-                    for (int j=0; j<16; j=j+1) begin
-                        intermediate_hashes[j] <= worker_hout[j];  // Collect all H0-H7 from each worker
+						 for (int k=0; k < num_nonce; k++) begin
+                        logic [31:0] current_wt; 
+                   
+                        if (tstep < 3)       current_wt = msg_tail[tstep];
+                        else if (tstep == 3) current_wt = k; // 【重點】這裡帶入 Nonce！ k 就是 nonce 值 (0~15)
+                        else if (tstep == 4) current_wt = 32'h80000000;
+                        else if (tstep == 15) current_wt = 32'd640;
+                        else                 current_wt = word_expan(wt[k]); // 使用第 k 個人的 w
+
+                        // 2. 更新 Sliding Window (第 k 個人的)
+                        if (tstep < 64) begin
+                            if (tstep < 16) wt[k][tstep] <= current_wt;
+                            else begin
+                                for (int x=0; x<15; x++) wt[k][x] <= wt[k][x+1];
+                                wt[k][15] <= current_wt;
+                            end
+
+                            // 3. 執行 SHA256 Function (大家共用同一個 function 但輸入不同)
+                            {a[k], b[k], c[k], d[k], e[k], f[k], g[k], h_reg[k]} <= sha256_op(a[k], b[k], c[k], d[k], e[k], f[k], g[k], h_reg[k], current_wt, k[tstep]);
+                        end
+                    end // End of FOR LOOP
+
+                    // 控制計數器 (只有一個，控制所有人)
+                    if (tstep < 64) tstep <= tstep + 1;
+                    else begin
+                        // 結算
+                        for (int k = 0; k < 16; k++) begin
+									wt[k][0] <= a[k] + phase1_hashes[0];
+									wt[k][1] <= b[k] + phase1_hashes[1];
+									wt[k][2] <= c[k] + phase1_hashes[2];
+									wt[k][3] <= d[k] + phase1_hashes[3];
+									wt[k][4] <= e[k] + phase1_hashes[4];
+									wt[k][5] <= f[k] + phase1_hashes[5];
+									wt[k][6] <= g[k] + phase1_hashes[6];
+									wt[k][7] <= h_reg[k] + phase1_hashes[7];
+
+                        // 2. 重置 a~h 為 SHA-256 標準 IV (為了 Phase 3 的運算)
+                        //    這步非常重要！因為 sha256_op 需要從這些初始值開始算
+									a[k] <= 32'h6a09e667; 
+									b[k] <= 32'hbb67ae85; 
+									c[k] <= 32'h3c6ef372; 
+									d[k] <= 32'ha54ff53a;
+									e[k] <= 32'h510e527f; 
+									f[k] <= 32'h9b05688c; 
+									g[k] <= 32'h1f83d9ab; 
+									h_reg[k] <= 32'h5be0cd19;
+								end
+                        state <= PHASE3;
+                        tstep <= 0;
                     end
+				end
+				
+				PHASE3: begin
+						  for (int k=0; k < num_nonce; k++) begin
+                        logic [31:0] current_wt; 
+                        
+                        if (tstep < 8) current_wt = wt[k][tstep]; // Set up a blocking statement for immediately updating message.
+								else if (tstep == 8) current_wt = 32'h80000000;
+								else if (tstep < 15) current_wt = 32'h00000000;
+								else if (tstep == 15) current_wt = 32'd256;
+								else current_wt = word_expan(wt[k]);
+                        // 2. 更新 Sliding Window (第 k 個人的)
+                        if (tstep < 64) begin
+                            if (tstep < 16) wt[k][tstep] <= current_wt;
+                            else begin
+                                for (int x=0; x<15; x++) wt[k][x] <= wt[k][x+1];
+                                wt[k][15] <= current_wt;
+                            end
 
-                    // Prepare for Phase 3
-                    worker_phase_sel <= 1; // Phase 3
-                    worker_start <= 1;     // Start workers again
-                    state <= PHASE3;
-                end
-					 else worker_start <= 0;
-            end
+                            // 3. 執行 SHA256 Function (大家共用同一個 function 但輸入不同)
+                            {a[k], b[k], c[k], d[k], e[k], f[k], g[k], h_reg[k]} <= sha256_op(a[k], b[k], c[k], d[k], e[k], f[k], g[k], h_reg[k], current_wt, k[tstep]);
+                        end
+                    end // End of FOR LOOP
 
-
-            PHASE3: begin
-                if (worker_finish[0] == 1) begin
-                    // Collect intermediate hashes from all workers
-                    for (int j=0; j<16; j=j+1) begin
-                        final_hashes[j] <= worker_hout[j][0]; // Collect only H0 from each worker  
+                    // 控制計數器 (只有一個，控制所有人)
+                    if (tstep < 64) tstep <= tstep + 1;
+                    else begin
+                        // 結算
+                        for (int k=0; k<16; k++) begin
+                             final_hashes[k] <= 32'h6a09e667 + a[k];
+                        end
+                        state <= WRITE;
+                        tstep <= 0;
                     end
-
-                    state<=WRITE;
-                    offset <= 0;  // Reset offset for WRITE stage. bc we already used offset in READ stage (offset=19), if not reset, the offset value will start from 19 in WRITE stage.
-                    i <= 0;     // Reset i for WRITE stage (also used in READ stage)
-                end
-					 else worker_start <= 0;
             end
-
-
             WRITE: begin
-                if (i <16 )begin
+                if (i < 16 )begin
                     offset <= i;
                     mem_write_data <= final_hashes[i]; //When i=0, write final_hashes[0] (ie. H0), to memory ; i=1, write H1; ... i=7, write H7
                     i <= i + 1;
