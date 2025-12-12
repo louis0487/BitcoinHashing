@@ -210,6 +210,7 @@ always_ff @(posedge clk, negedge reset_n)begin
                         if (tstep < 3)       current_wt = msg_tail[tstep];
                         else if (tstep == 3) current_wt = k; // 【重點】這裡帶入 Nonce！ k 就是 nonce 值 (0~15)
                         else if (tstep == 4) current_wt = 32'h80000000;
+                        else if (tstep < 15) current_wt = 32'd0;
                         else if (tstep == 15) current_wt = 32'd640;
                         else                 current_wt = word_expan(wt[k]); // 使用第 k 個人的 w
 
