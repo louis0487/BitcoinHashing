@@ -54,7 +54,7 @@ parameter logic [31:0] initial_hashes[0:7] = '{
 };
 
 // Function declarations (reused)
-function logic [31:0] word_expan (input logic [31:0]w_arr[0:15]);
+function logic [31:0] word_expan (input logic [31:0]w_arr[15:0]);
     logic [31:0] s0,s1;
     s0 = (rightrotate(w_arr[1], 7)) ^ (rightrotate(w_arr[1], 18)) ^ (rightshift(w_arr[1], 3));
     s1 = (rightrotate(w_arr[14], 17)) ^ (rightrotate(w_arr[14], 19)) ^ (rightshift(w_arr[14], 10));
