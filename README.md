@@ -62,6 +62,7 @@ The **Area-Delay Optimization** design successfully reduced the Area-Delay produ
 * **Hardware:** FPGA (Arria II GX)
 
 ## 📂 File Structure
-* `bitcoin_hash.sv`: Top-level module implementing the FSM and hashing logic.
+* `bitcoin_hash_areadelay_optimization.sv`: Area and Delay optimization version of Top-level module implementing the FSM and hashing logic.
+* `bitcoin_hash_mindelay.sv`: Delay only optimization version of Top-level module implementing the FSM and hashing logic.
 * `simplified_sha256.sv`: Helper module for standard SHA-256 operations.
 * `tb_bitcoin_hash.sv`: Testbench for verifying hash correctness against expected output.
