@@ -1,6 +1,6 @@
 # Bitcoin Hashing Hardware Accelerator (SystemVerilog)
 
-**Authors:** Bing-You Yu (A69041854) & Louis Lin (A69043447)  
+**Authors:** Bing-You Yu & Louis Lin
 **Course:** ECE 111 - Advanced Digital Design Project (UCSD)
 
 ## 📖 Project Overview
