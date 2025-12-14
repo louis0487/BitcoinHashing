@@ -90,7 +90,7 @@ assign msg_tail[0] = message_buffer[16];
 assign msg_tail[1] = message_buffer[17];
 assign msg_tail[2] = message_buffer[18];
 
-always_ff @(posedge clk, negedge reset_n) begin
+always_ff @(posedge clk) begin
     if (!reset_n) begin
         state <= IDLE;
         done <= 0;
@@ -184,7 +184,7 @@ always_ff @(posedge clk, negedge reset_n) begin
             PHASE2: begin
                 // For each nonce n we compute its W_t (w_t) locally, update its wt buffer,
                 // then perform sha256_op for that nonce using w_t and k[tstep].
-                for (int n = 0; n < 8; n++) begin
+                for (int n = 0; n < num_nonce; n++) begin
                     // local combinational temp for this nonce & this round
                     logic [31:0] w_t;
                     // block2 message schedule
@@ -212,62 +212,7 @@ always_ff @(posedge clk, negedge reset_n) begin
                 if (tstep < 64) tstep <= tstep + 1;
                 else begin
                     // finalize block2 results: store intermediate H0..H7 into wt[n][0..7]
-                    for (int n = 0; n < 8; n++) begin
-                        wt[n][0] <= a[n] + phase1_hashes[0];
-                        wt[n][1] <= b[n] + phase1_hashes[1];
-                        wt[n][2] <= c[n] + phase1_hashes[2];
-                        wt[n][3] <= d[n] + phase1_hashes[3];
-                        wt[n][4] <= e[n] + phase1_hashes[4];
-                        wt[n][5] <= f[n] + phase1_hashes[5];
-                        wt[n][6] <= g[n] + phase1_hashes[6];
-                        wt[n][7] <= h_reg[n] + phase1_hashes[7];
-                        // reset A..H to IV for phase3
-                        a[n] <= initial_hashes[0];
-                        b[n] <= initial_hashes[1];
-                        c[n] <= initial_hashes[2];
-                        d[n] <= initial_hashes[3];
-                        e[n] <= initial_hashes[4];
-                        f[n] <= initial_hashes[5];
-                        g[n] <= initial_hashes[6];
-                        h_reg[n] <= initial_hashes[7];
-                    end
-                    state <= PHASE2_P2;
-                    tstep <= 0;
-                end
-            end // PHASE2
-				
-				PHASE2_P2: begin
-                // For each nonce n we compute its W_t (w_t) locally, update its wt buffer,
-                // then perform sha256_op for that nonce using w_t and k[tstep].
-                for (int n = 8; n < num_nonce; n++) begin
-                    // local combinational temp for this nonce & this round
-                    logic [31:0] w_t;
-                    // block2 message schedule
-                    if (tstep < 3)            w_t = msg_tail[tstep];
-                    else if (tstep == 3)      w_t = n;                // nonce (0..15)
-                    else if (tstep == 4)      w_t = 32'h80000000;
-                    else if (tstep < 15)      w_t = 32'h00000000;
-                    else if (tstep == 15)     w_t = 32'd640;         // total bits length
-                    else                      w_t = word_expan(wt[n]);
-
-                    if (tstep < 64) begin
-                        // update this nonce's wt buffer
-                        if (tstep < 16) wt[n][tstep] <= w_t;
-                        else begin
-                            for (int x = 0; x < 15; x++) wt[n][x] <= wt[n][x+1];
-                            wt[n][15] <= w_t;
-                        end
-
-                        // perform one sha256 round for this nonce
-                        {a[n], b[n], c[n], d[n], e[n], f[n], g[n], h_reg[n]} <=
-                            sha256_op(a[n], b[n], c[n], d[n], e[n], f[n], g[n], h_reg[n], w_t, k[tstep]);
-                    end
-                end // for n
-
-                if (tstep < 64) tstep <= tstep + 1;
-                else begin
-                    // finalize block2 results: store intermediate H0..H7 into wt[n][0..7]
-                    for (int n = 8; n < num_nonce; n++) begin
+                    for (int n = 0; n < num_nonce; n++) begin
                         wt[n][0] <= a[n] + phase1_hashes[0];
                         wt[n][1] <= b[n] + phase1_hashes[1];
                         wt[n][2] <= c[n] + phase1_hashes[2];
@@ -291,11 +236,8 @@ always_ff @(posedge clk, negedge reset_n) begin
                 end
             end // PHASE2
 
-            // ------------------------------
-            // PHASE3: vectorized over all nonces (block 3)
-            // ------------------------------
-            PHASE3: begin
-                for (int n = 0; n < 8; n++) begin
+				PHASE3: begin
+                for (int n = 0; n < num_nonce; n++) begin
                     logic [31:0] w_t;
                     // block3 message schedule using wt[n] produced from block2 finalization
                     if (tstep < 8)           w_t = wt[n][tstep];
@@ -318,40 +260,7 @@ always_ff @(posedge clk, negedge reset_n) begin
 
                 if (tstep < 64) tstep <= tstep + 1;
                 else begin
-                    for (int n = 0; n < 8; n++) begin
-                        // final H0 = IV[0] + a[n]  (user earlier expected H0 from final compression)
-                        final_hashes[n] <= initial_hashes[0] + a[n];
-                    end
-                    state <= PHASE3_P2;
-                    tstep <= 0;
-                end
-            end // PHASE3
-				
-				PHASE3_P2: begin
-                for (int n = 8; n < num_nonce; n++) begin
-                    logic [31:0] w_t;
-                    // block3 message schedule using wt[n] produced from block2 finalization
-                    if (tstep < 8)           w_t = wt[n][tstep];
-                    else if (tstep == 8)     w_t = 32'h80000000;
-                    else if (tstep < 15)     w_t = 32'h00000000;
-                    else if (tstep == 15)    w_t = 32'd256; // 256 bits for single-block finalisation
-                    else                     w_t = word_expan(wt[n]);
-
-                    if (tstep < 64) begin
-                        if (tstep < 16) wt[n][tstep] <= w_t;
-                        else begin
-                            for (int x = 0; x < 15; x++) wt[n][x] <= wt[n][x+1];
-                            wt[n][15] <= w_t;
-                        end
-
-                        {a[n], b[n], c[n], d[n], e[n], f[n], g[n], h_reg[n]} <=
-                            sha256_op(a[n], b[n], c[n], d[n], e[n], f[n], g[n], h_reg[n], w_t, k[tstep]);
-                    end
-                end // for n
-
-                if (tstep < 64) tstep <= tstep + 1;
-                else begin
-                    for (int n = 8; n < num_nonce; n++) begin
+                    for (int n = 0; n < num_nonce; n++) begin
                         // final H0 = IV[0] + a[n]  (user earlier expected H0 from final compression)
                         final_hashes[n] <= initial_hashes[0] + a[n];
                     end
