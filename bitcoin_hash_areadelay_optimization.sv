@@ -7,13 +7,13 @@ module bitcoin_hash (
     input  logic [31:0] mem_read_data
 );
 
-parameter num_nonce = 16; // number of nonces (0..15)
+parameter num_nonce = 16; // number of nonces (0..15), can change number of testing nonce.
 
 // State definition
-enum logic [4:0] {IDLE, READ, PHASE1, PHASE2, PHASE3, WRITE} state;
+enum logic [4:0] {IDLE, READ, PHASE1, PHASE2, PHASE3, WRITE} state; // The phases that bitcoin hash needs.
 
 // Memory and Data buffers
-logic [31:0] msg_tail[3];
+logic [31:0] msg_tail[3]; // Register for storing the last three words from the input message.
 (* ramstyle = "logic" *) logic [31:0] message_buffer [19];  // Stores the loaded 19 words (Words 0~18)
 (* ramstyle = "logic" *) logic [31:0] phase1_hashes [7:0];  // Stores the result of Phase 1 computed by Master
 (* ramstyle = "logic" *) logic [31:0] final_hashes [15:0];  // Stores the final H0 result for all 16 workers
@@ -22,11 +22,11 @@ logic [31:0] msg_tail[3];
 logic [15:0] offset;  // Memory address offset
 logic [4:0] i;  // General purpose index counter
 logic [6:0] tstep;  // Counter for internal SHA-256 rounds (0..63)
-logic [3:0] nonce_ctr;
+logic [3:0] nonce_ctr; //Counter for counting how many cycles this operation have done.
 
-// Master internal calculation variable for PHASE1
+// Internal calculation variable for PHASE1
 logic [31:0] a, b, c, d, e, f, g, h_reg;
-(* ramstyle = "logic" *) logic [31:0] w[15:0];  // Sliding window for Master's W expansion
+(* ramstyle = "logic" *) logic [31:0] w[15:0];  // Sliding window for words expansion
 
 
 // SHA256 K constants
@@ -53,8 +53,8 @@ parameter logic [31:0] initial_hashes[0:7] = '{
     32'h5be0cd19
 };
 
-// Function declarations (reused)
-function logic [31:0] word_expan (input logic [31:0]w_arr[15:0]);
+// Function declarations 
+function logic [31:0] word_expan (input logic [31:0]w_arr[15:0]); // A word expansion function that can operate word expansion by given data.
     logic [31:0] s0,s1;
     s0 = (rightrotate(w_arr[1], 7)) ^ (rightrotate(w_arr[1], 18)) ^ (rightshift(w_arr[1], 3));
     s1 = (rightrotate(w_arr[14], 17)) ^ (rightrotate(w_arr[14], 19)) ^ (rightshift(w_arr[14], 10));
@@ -90,24 +90,24 @@ assign msg_tail[0] = message_buffer[16];
 assign msg_tail[1] = message_buffer[17];
 assign msg_tail[2] = message_buffer[18];
 
-always_ff @(posedge clk) begin
+always_ff @(posedge clk or negedge reset_n) begin // Seting asynchronous reset, but synchronous reset is also available.
     if (!reset_n) begin
         state <= IDLE;
         done <= 0;
         offset <= 0;
         i <= 0;
         tstep <= 0;
-		  nonce_ctr <= 0;
+		nonce_ctr <= 0;
         // clear arrays (optional but safe)
         a <= 0; b <= 0; c <= 0; d <= 0;
         e <= 0; f <= 0; g <= 0; h_reg <= 0;
         for (int j=0; j<16; j++) w[j] <= 0;
     end 
-	 else begin
+	else begin
         case (state)
             IDLE: begin
                 done <= 0;
-                if (start) begin
+                if (start) begin // Detecting the start signal then move state to READ state.
                     offset <= 0;
                     i <= 0;
                     state <= READ;
@@ -115,7 +115,7 @@ always_ff @(posedge clk) begin
             end
 
             READ: begin
-                if (offset < 19) offset <= offset + 1;
+                if (offset < 19) offset <= offset + 1; // Because the address need one cycle to store into the register, so at offset = 2, the first address comes in.
 
                 if (offset > 0 && i < 19) begin
                     message_buffer[i] <= mem_read_data;
@@ -135,7 +135,7 @@ always_ff @(posedge clk) begin
             end
 
             PHASE1: begin
-                logic [31:0] current_w;
+                logic [31:0] current_w; // Create a register for doing blocking statement stuff.
                 if (tstep < 16) current_w = w[tstep];
                 else current_w = word_expan(w);
 
@@ -143,7 +143,7 @@ always_ff @(posedge clk) begin
                     {a, b, c, d, e, f, g, h_reg} <=
                         sha256_op(a, b, c, d, e, f, g, h_reg, current_w, k[tstep]);
                     if (tstep >= 16) begin
-                        for (int x=0; x<15; x++) w[x] <= w[x+1];
+                        for (int x=0; x<15; x++) w[x] <= w[x+1]; // Right shift the arrays to make it fit the next word expansion.
                         w[15] <= current_w;
                     end
                     tstep <= tstep + 1;
@@ -252,7 +252,7 @@ always_ff @(posedge clk) begin
                 else begin
                         // final H0 = IV[0] + a[n]  (user earlier expected H0 from final compression)
                         final_hashes[nonce_ctr] <= initial_hashes[0] + a;
-								if (nonce_ctr < num_nonce - 1) begin
+								if (nonce_ctr < num_nonce - 1) begin // Detect whether the process is done, if not then move to phase 2 and do the next nonce process.
 									state <= PHASE2;
 									tstep <= 0;
 									nonce_ctr <= nonce_ctr + 1;
