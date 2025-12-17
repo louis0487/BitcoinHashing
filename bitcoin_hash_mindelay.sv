@@ -90,7 +90,7 @@ assign msg_tail[0] = message_buffer[16];
 assign msg_tail[1] = message_buffer[17];
 assign msg_tail[2] = message_buffer[18];
 
-always_ff @(posedge clk) begin
+always_ff @(posedge clk or negedge reset_n) begin
     if (!reset_n) begin
         state <= IDLE;
         done <= 0;
