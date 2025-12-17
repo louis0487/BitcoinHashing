@@ -1,7 +1,7 @@
 # Bitcoin Hashing Hardware Accelerator (SystemVerilog)
 
-**Authors:** Bing-You Yu & Louis Lin
-**Course:** ECE 111 - Advanced Digital Design Project (UCSD)
+**Authors:** Bing-You Yu & Louis Lin  
+***Course:** ECE 111 - Advanced Digital Design Project (UCSD)
 
 ## 📖 Project Overview
 This project implements a hardware accelerator for **Bitcoin Hashing** using **SystemVerilog**. The core algorithm is **Double SHA-256** (`SHA256(SHA256(Header))`), which is the fundamental mechanism used in Bitcoin mining for data integrity and block verification.
