@@ -10,10 +10,10 @@ module bitcoin_hash (
 parameter num_nonce = 16; // number of nonces (0..15)
 
 // State definition
-enum logic [4:0] {IDLE, READ, PHASE1, PHASE2, PHASE2_P2, PHASE3, PHASE3_P2, WRITE} state;
+enum logic [4:0] {IDLE, READ, PHASE1, PHASE2, PHASE3, WRITE} state;
 
 // Memory and Data buffers
-logic [31:0] msg_tail[3];
+logic [31:0] msg_tail[3]; // Stores the last three messages in 19 words, for the second phase of sha operation.
 logic [31:0] message_buffer [0:18];  // Stores the loaded 19 words (Words 0~18)
 logic [31:0] phase1_hashes [7:0];  // Stores the result of Phase 1 computed by Master
 logic [31:0] final_hashes [15:0];  // Stores the final H0 result for all 16 workers
@@ -24,8 +24,8 @@ logic [4:0] i;  // General purpose index counter
 logic [6:0] tstep;  // Counter for internal SHA-256 rounds (0..63)
 
 // Master internal calculation variable for PHASE1
-logic [31:0] a[16], b[16], c[16], d[16], e[16], f[16], g[16], h_reg[16];
-logic [31:0] a_phase1, b_phase1, c_phase1, d_phase1, e_phase1, f_phase1, g_phase1, h_phase1;
+logic [31:0] a[16], b[16], c[16], d[16], e[16], f[16], g[16], h_reg[16]; // Registers for 16 parallel computations.
+logic [31:0] a_phase1, b_phase1, c_phase1, d_phase1, e_phase1, f_phase1, g_phase1, h_phase1; // Registers for phase 1 computations.
 logic [31:0] w[15:0];  // Sliding window for Master's W expansion
 logic [31:0] wt[15:0][15:0]; // wt[n][t] per-nonce schedule buffer (0..15)
 

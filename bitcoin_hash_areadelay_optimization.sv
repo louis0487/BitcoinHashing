@@ -82,7 +82,7 @@ endfunction
 
 // Memory interface logic
 assign mem_clk = clk;
-assign mem_addr = (state == READ) ? (message_addr + offset) : (output_addr + offset);
+assign mem_addr = (state == READ) ? (message_addr + offset) : (output_addr + offset); // Selecting mem_addr should be read state or write state.
 assign mem_we = (state == WRITE) ? 1'b1 : 1'b0;
 
 // Prepare common message tail (Words 16, 17, 18) for Block 2
