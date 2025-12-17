@@ -59,7 +59,8 @@ The **Area-Delay Optimization** design successfully reduced the Area-Delay produ
 ## 🛠 Tools Used
 * **Language:** SystemVerilog
 * **Synthesis/Simulation:** Intel Quartus Prime, ModelSim
-* **Hardware:** Family: FPGA (Arria II GX)  Device: EP2AGX45DF29I5
+* **Family:** FPGA (Arria II GX)
+* **Device:** EP2AGX45DF29I5
 
 ## 📂 File Structure
 * `bitcoin_hash_areadelay_optimization.sv`: Area and Delay optimization version of Top-level module implementing the FSM and hashing logic.
