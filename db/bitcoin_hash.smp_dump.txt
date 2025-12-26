@@ -1,0 +1,11 @@
+
+State Machine - |bitcoin_hash|state
+Name state.WRITE state.PHASE3_P2 state.PHASE3 state.PHASE2_P2 state.PHASE2 state.PHASE1 state.READ state.IDLE 
+state.IDLE 0 0 0 0 0 0 0 0 
+state.READ 0 0 0 0 0 0 1 1 
+state.PHASE1 0 0 0 0 0 1 0 1 
+state.PHASE2 0 0 0 0 1 0 0 1 
+state.PHASE2_P2 0 0 0 1 0 0 0 1 
+state.PHASE3 0 0 1 0 0 0 0 1 
+state.PHASE3_P2 0 1 0 0 0 0 0 1 
+state.WRITE 1 0 0 0 0 0 0 1 

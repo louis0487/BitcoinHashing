@@ -1,0 +1,1 @@
+Warning (10268): Verilog HDL information at bitcoin_hash.sv(93): always construct contains both blocking and non-blocking assignments File: D:/Users/Brian/Programming/SystemVerilog/Fi_project_Part2/BitcoinHashing/bitcoin_hash.sv Line: 93
